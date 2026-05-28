@@ -1,0 +1,26 @@
+{
+  "tiktok": {
+    "repo": "https://github.com/iuiaoin/plugin_tiktok.git",
+    "desc": "A plugin show you short videos with pretty girls"
+  },
+  "weather": {
+    "repo": "https://github.com/iuiaoin/plugin_weather.git",
+    "desc": "A plugin that offers you daily weather report for free"
+  },
+  "douyin": {
+    "repo": "https://github.com/spacex-3/dy-wcf.git",
+    "desc": "抖音视频去水印"
+  },
+  "momoyu": {
+    "repo": "https://github.com/spacex-3/mmy-wcf.git",
+    "desc": "momoyu资讯"
+  },
+  "opendoor": {
+    "repo": "https://github.com/spacex-3/opendoor.git",
+    "desc": "opendoor"
+  },
+  "midjourney": {
+    "repo": "https://github.com/spacex-3/midjourney.git",
+    "desc": "midjourney代理画图"
+  }
+}
