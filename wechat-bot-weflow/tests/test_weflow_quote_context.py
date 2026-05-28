@@ -60,7 +60,7 @@ class WeFlowQuoteContextTest(unittest.TestCase):
             "你觉得等于几？",
             {
                 "serverId": "101",
-                "senderUsername": "fantasysk",
+                "senderUsername": "friend_wxid",
                 "parsedContent": "5+8=几",
                 "localType": 1,
             },
@@ -142,7 +142,7 @@ class WeFlowQuoteContextTest(unittest.TestCase):
         )
         referenced_message = {
             "serverId": "104",
-            "senderUsername": "fantasysk",
+            "senderUsername": "friend_wxid",
             "parsedContent": "[聊天记录] 小橙的聊天记录",
             "rawContent": raw_content,
             "localType": 49,
@@ -191,7 +191,7 @@ class WeFlowQuoteContextTest(unittest.TestCase):
                 "你觉得这是什么？",
                 {
                     "serverId": "103",
-                    "senderUsername": "fantasysk",
+                    "senderUsername": "friend_wxid",
                     "parsedContent": "[图片]",
                     "localType": 3,
                 },
@@ -214,7 +214,7 @@ class WeFlowQuoteContextTest(unittest.TestCase):
 
     def test_session_uses_multimodal_content_when_present(self):
         context = Context()
-        context.session_id = "fantasysk"
+        context.session_id = "friend_wxid"
         context.query = "fallback text"
         context.message_content = [
             {"type": "text", "text": "question"},

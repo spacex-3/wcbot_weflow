@@ -26,7 +26,7 @@ def load_config():
         config = json.loads(config_str)
 
     else:
-        raise Exception("Config file is not exist, please create config.json according to config.template.json")
+        raise Exception("Config file is not exist, please create config.yaml according to config.template.yaml")
 
     logger.info(f"Load config: {config}")
 

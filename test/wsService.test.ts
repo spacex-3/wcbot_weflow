@@ -7,16 +7,16 @@ import {
 } from '../src/wsService.ts';
 
 test('resolveDisplayName prefers display name maps over raw usernames', () => {
-    assert.equal(resolveDisplayName('fantasysk', { fantasysk: 'Kayson' }), 'Kayson');
-    assert.equal(resolveDisplayName('fantasysk', {}), 'fantasysk');
-    assert.equal(resolveDisplayName('', { fantasysk: 'Kayson' }), '');
+    assert.equal(resolveDisplayName('friend_wxid', { friend_wxid: 'FriendName' }), 'FriendName');
+    assert.equal(resolveDisplayName('friend_wxid', {}), 'friend_wxid');
+    assert.equal(resolveDisplayName('', { friend_wxid: 'FriendName' }), '');
 });
 
 test('new message notifications keep sender id and include sender display name', () => {
     const notification = buildNewMessageNotification({
-        sessionId: 'fantasysk',
-        sender: 'fantasysk',
-        senderName: 'Kayson',
+        sessionId: 'friend_wxid',
+        sender: 'friend_wxid',
+        senderName: 'FriendName',
         timestamp: 1779923259,
         type: 0,
         content: '你好',
@@ -26,11 +26,11 @@ test('new message notifications keep sender id and include sender display name',
 
     assert.deepEqual(notification, {
         type: 'new_message',
-        sessionId: 'fantasysk',
+        sessionId: 'friend_wxid',
         message: {
-            sender: 'fantasysk',
-            senderName: 'Kayson',
-            senderDisplayName: 'Kayson',
+            sender: 'friend_wxid',
+            senderName: 'FriendName',
+            senderDisplayName: 'FriendName',
             timestamp: 1779923259,
             type: 0,
             content: '你好',

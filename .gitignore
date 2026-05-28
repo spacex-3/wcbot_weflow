@@ -29,10 +29,12 @@ assets/*.png
 assets/*.jpg
 assets/*.jpeg
 assets/*.mp4
-0.wechat-gptbot-wcf-20260423bk/assets/*.png
-0.wechat-gptbot-wcf-20260423bk/assets/*.jpg
-0.wechat-gptbot-wcf-20260423bk/assets/*.jpeg
-0.wechat-gptbot-wcf-20260423bk/assets/*.mp4
+**/assets/*.png
+**/assets/*.jpg
+**/assets/*.jpeg
+**/assets/*.gif
+**/assets/*.webp
+**/assets/*.mp4
 
 # IDE 配置
 .vscode/

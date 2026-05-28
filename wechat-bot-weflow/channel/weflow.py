@@ -151,7 +151,7 @@ class WeFlowChannel(Channel):
             if raw_msg.get('type') == 'new_message':
                 logger.info(f"[WeFlow RAW] {raw_msg}")
                 # The payload looks like:
-                # {"type":"new_message","sessionId":"fantasysk","message":{"sender":"fantasysk","timestamp":1772492051,"type":0,"content":"你好呢","platformMessageId":"8587347484366484879"},"timestamp":1772491947325}
+                # {"type":"new_message","sessionId":"friend_wxid","message":{"sender":"friend_wxid","timestamp":1772492051,"type":0,"content":"你好呢","platformMessageId":"8587347484366484879"},"timestamp":1772491947325}
                 msg_data = raw_msg.get('message', {})
                 session_id = raw_msg.get('sessionId', '')
                 self.process_weflow_msg(msg_data, session_id)
@@ -159,7 +159,7 @@ class WeFlowChannel(Channel):
             logger.error(f"[WeFlowChannel] Error parsing message: {e}")
 
     def process_weflow_msg(self, msg_data, session_id):
-        # WeFlow format: {"sender":"fantasysk","timestamp":1772492051,"type":0,"content":"你好呢"}
+        # WeFlow format: {"sender":"friend_wxid","timestamp":1772492051,"type":0,"content":"你好呢"}
 
         sdid = msg_data.get('sender') # the actual person who sent it
         is_group = '@chatroom' in session_id
