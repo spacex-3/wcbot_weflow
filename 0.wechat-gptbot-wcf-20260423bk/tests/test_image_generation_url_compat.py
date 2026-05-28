@@ -6,7 +6,9 @@ if "yaml" not in sys.modules:
     yaml_stub.safe_load = lambda *args, **kwargs: {}
     sys.modules["yaml"] = yaml_stub
 
-if "lxml" not in sys.modules:
+try:
+    from lxml import etree  # noqa: F401
+except Exception:
     lxml_stub = types.ModuleType("lxml")
     lxml_stub.etree = types.SimpleNamespace(fromstring=lambda *args, **kwargs: None)
     sys.modules["lxml"] = lxml_stub

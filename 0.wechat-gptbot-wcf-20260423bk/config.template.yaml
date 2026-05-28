@@ -34,3 +34,9 @@ openai_sensitive_id: ''
 wechat_channel: weflow  # 设为 weflow 即可启用新的通道
 weflow_http_url: http://127.0.0.1:5031
 weflow_ws_url: ws://127.0.0.1:5032
+wechat_data_dir: ''
+image_xor_key: 0x1F
+image_aes_key: ''
+quoted_link_fetch_timeout: 10
+quoted_link_fetch_max_chars: 12000
+assets_retention_days: 7

@@ -130,6 +130,7 @@ def build_quote_context(
     user_query: str,
     referenced_message: dict[str, Any] | None,
     image_path: str | None = None,
+    webpage: dict[str, Any] | None = None,
 ) -> tuple[str, Any | None]:
     message = referenced_message or {}
     kind = _infer_referenced_kind(message)
@@ -148,15 +149,29 @@ def build_quote_context(
 
     if kind == "link":
         title = _extract_link_title(message)
-        url = _pick_first(message, "url", "linkUrl")
+        url = extract_link_url(message)
         summary = _clean_text(message.get("parsedContent"))
+        page = webpage or {}
+        page_title = _clean_text(page.get("title"))
+        page_site_name = _clean_text(page.get("site_name"))
+        page_content = _clean_text(page.get("content"))
+        page_url = _clean_text(page.get("url")) or url
+        page_error = _clean_text(page.get("error"))
         parts = []
         if title:
             parts.append(f"标题：{title}")
-        if url:
-            parts.append(f"URL：{url}")
+        if page_title and page_title != title:
+            parts.append(f"网页标题：{page_title}")
+        if page_site_name:
+            parts.append(f"来源：{page_site_name}")
+        if page_url:
+            parts.append(f"URL：{page_url}")
         if summary and summary != title:
             parts.append(f"内容：{summary}")
+        if page_content:
+            parts.append(f"网页正文：\n{page_content}")
+        elif page_error:
+            parts.append(f"网页正文：下载失败（{page_error}）")
         if not parts:
             parts.append("[链接/卡片]")
 
@@ -185,11 +200,22 @@ def _infer_referenced_kind(message: dict[str, Any]) -> str:
 
     if local_type == 3 or parsed_content in ("[图片]", "[image]", "图片"):
         return "image"
-    if _pick_first(message, "url", "linkUrl"):
+    if extract_link_url(message):
         return "link"
     if local_type == 49 and xml_type in ("5", "49", ""):
         return "link"
     return "text"
+
+
+def is_referenced_link_message(message: dict[str, Any]) -> bool:
+    return _infer_referenced_kind(message) == "link"
+
+
+def extract_link_url(message: dict[str, Any]) -> str:
+    return _pick_first(message, "url", "linkUrl") or _extract_xml_value(
+        str(message.get("rawContent") or message.get("content") or ""),
+        "url",
+    )
 
 
 def _build_image_content(prompt: str, image_path: str | None) -> list[dict[str, Any]] | None:

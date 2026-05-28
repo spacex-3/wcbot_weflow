@@ -15,6 +15,7 @@ from channel.weflow_quote import (
     build_quote_context,
     cache_image_path,
     candidate_image_timestamps,
+    extract_link_url,
     extract_referenced_message_id,
     get_cached_image_path,
     is_weflow_reply_message,
@@ -86,6 +87,44 @@ class WeFlowQuoteContextTest(unittest.TestCase):
         self.assertIn("热门公众号文章", prompt)
         self.assertIn("https://mp.weixin.qq.com/s/abc", prompt)
         self.assertIn("你觉得这是什么？", prompt)
+
+    def test_link_quote_includes_downloaded_webpage_content_in_prompt(self):
+        prompt, content = build_quote_context(
+            "你觉得这是什么？",
+            {
+                "serverId": "102",
+                "senderUsername": "gh_example",
+                "parsedContent": "[链接] 热门公众号文章",
+                "rawContent": "<msg><appmsg><title>热门公众号文章</title><url>https://mp.weixin.qq.com/s/abc</url><type>5</type></appmsg></msg>",
+                "localType": 49,
+                "xmlType": "5",
+            },
+            webpage={
+                "url": "https://mp.weixin.qq.com/s/abc",
+                "title": "网页标题",
+                "site_name": "公众号名称",
+                "content": "这是下载后的网页正文。",
+                "error": None,
+            },
+        )
+
+        self.assertIsNone(content)
+        self.assertIn("网页标题：网页标题", prompt)
+        self.assertIn("来源：公众号名称", prompt)
+        self.assertIn("URL：https://mp.weixin.qq.com/s/abc", prompt)
+        self.assertIn("网页正文：\n这是下载后的网页正文。", prompt)
+        self.assertIn("用户追问：\n你觉得这是什么？", prompt)
+
+    def test_extract_link_url_reads_raw_xml_when_url_field_is_missing(self):
+        self.assertEqual(
+            extract_link_url(
+                {
+                    "rawContent": "<msg><appmsg><url><![CDATA[https://mp.weixin.qq.com/s/raw]]></url></appmsg></msg>",
+                    "localType": 49,
+                }
+            ),
+            "https://mp.weixin.qq.com/s/raw",
+        )
 
     def test_image_quote_builds_openai_multimodal_content(self):
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:

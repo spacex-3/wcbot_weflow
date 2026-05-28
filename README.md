@@ -16,7 +16,8 @@
 - Bot 支持引用消息：
   - 引用文本：把被引用文本和用户追问一起发给模型。
   - 引用图片：复用已解密图片缓存，或按时间戳兜底解密，再按 OpenAI `image_url` 多模态格式发给模型。
-  - 引用链接/卡片：把标题、URL 和用户追问一起发给模型。
+  - 引用链接/卡片：只在用户引用链接/卡片并追问时下载网页正文，把标题、URL、网页内容和用户追问一起发给模型。
+- Bot 启动时会清理 `assets/` 下超过保留期的图片文件，默认保留 7 天。
 - 兼容 OpenAI 格式的 Chat Completions API。
 
 ## 目录结构
@@ -90,9 +91,14 @@ model: gpt-5.5
 wechat_data_dir: C:\Users\YourName\xwechat_files\wxid_xxx_xxxx
 image_xor_key: 31
 image_aes_key: your_image_aes_key
+quoted_link_fetch_timeout: 10
+quoted_link_fetch_max_chars: 12000
+assets_retention_days: 7
 ```
 
 `wechat_data_dir`、`image_xor_key`、`image_aes_key` 用于解密微信图片 `.dat` 文件；引用图片要能被模型识别，所用模型/API 也必须支持 OpenAI 兼容的视觉输入。
+
+`quoted_link_fetch_timeout` 和 `quoted_link_fetch_max_chars` 控制引用链接/卡片时的网页下载超时和最多注入 prompt 的正文长度。网页正文只下载到内存，不落盘；`assets_retention_days` 只影响解密图片等运行时图片文件，设为 `0` 可关闭自动清理。
 
 ## 运行
 
@@ -215,9 +221,10 @@ Bot 收到 `type=25` 或带 `referencedPlatformMessageId` 的消息后，会：
 
 1. 用 `/api/v1/message` 按 `serverId` 精确查询被引用消息。
 2. 如果当前 WeFlow API 没有单条查询接口，则退回到 `/api/v1/messages` 最近消息里匹配。
-3. 文本和链接引用会合并到 prompt。
-4. 图片引用会优先命中最近已解密图片缓存；缓存未命中时再按消息时间戳和本地时区校正扫描 `.dat`。
-5. 图片成功定位后，以 OpenAI `image_url` data URL 格式传给上游模型。
+3. 文本引用会把被引用文本和用户追问合并到 prompt。
+4. 链接/卡片引用会先下载网页正文，再把标题、URL、网页内容和用户追问合并到 prompt；普通发送链接/卡片不会触发下载。
+5. 图片引用会优先命中最近已解密图片缓存；缓存未命中时再按消息时间戳和本地时区校正扫描 `.dat`。
+6. 图片成功定位后，以 OpenAI `image_url` data URL 格式传给上游模型。
 
 命中图片缓存时，bot 日志会出现：
 
@@ -239,7 +246,7 @@ Bot：
 ```bash
 cd 0.wechat-gptbot-wcf-20260423bk
 python3 -m unittest discover -s tests
-python3 -m compileall channel/weflow.py channel/weflow_quote.py common/context.py common/session.py
+python3 -m compileall channel/weflow.py channel/weflow_quote.py channel/weflow_webpage.py utils/file_cleanup.py common/context.py common/session.py
 ```
 
 ## 注意事项

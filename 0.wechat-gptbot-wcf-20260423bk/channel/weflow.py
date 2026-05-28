@@ -27,11 +27,15 @@ from channel.weflow_quote import (
     build_quote_context,
     cache_image_path,
     candidate_image_timestamps,
+    extract_link_url,
     extract_referenced_message_id,
     get_cached_image_path,
+    is_referenced_link_message,
     is_weflow_reply_message,
     strip_weflow_reply_marker,
 )
+from channel.weflow_webpage import fetch_webpage_text
+from utils.file_cleanup import cleanup_old_files
 
 
 @singleton
@@ -47,6 +51,7 @@ class WeFlowChannel(Channel):
         self.contacts = self.update_contacts()
         self.sender = WeChatSender()
         self.recent_image_paths = {}
+        self.cleanup_assets()
 
         # Mapping WeFlow message types to wrest message types
         # 1: Text, 3: Image, 34: Voice, 43: Video, 47: Emoji, 49: AppMsg (Link/File), 10000: System
@@ -341,10 +346,24 @@ class WeFlowChannel(Channel):
             if not image_path:
                 logger.warning(f"[WeFlowChannel] Quoted image could not be decrypted: {referenced_message_id}")
 
+        webpage = None
+        if is_referenced_link_message(referenced_message):
+            link_url = extract_link_url(referenced_message)
+            if link_url:
+                logger.info(f"[WeFlowChannel] Fetching quoted link content: {link_url}")
+                webpage = fetch_webpage_text(
+                    link_url,
+                    timeout=self.get_int_config("quoted_link_fetch_timeout", 10),
+                    max_chars=self.get_int_config("quoted_link_fetch_max_chars", 12000),
+                )
+                if webpage.get("error"):
+                    logger.warning(f"[WeFlowChannel] Quoted link fetch failed: {webpage.get('error')}")
+
         prompt, message_content = build_quote_context(
             context.query,
             referenced_message,
             image_path=image_path,
+            webpage=webpage,
         )
         context.query = prompt
         if message_content is not None:
@@ -379,6 +398,26 @@ class WeFlowChannel(Channel):
         except Exception as e:
             logger.warning(f"[WeFlowChannel] Fetch referenced message failed: {e}")
         return None
+
+    def cleanup_assets(self):
+        retention_days = self.get_int_config("assets_retention_days", 7)
+        if retention_days <= 0:
+            return
+        result = cleanup_old_files(
+            os.path.abspath("./assets"),
+            retention_days=retention_days,
+            allowed_extensions={".jpg", ".jpeg", ".png", ".gif", ".webp"},
+        )
+        if result["removed"] or result["failed"]:
+            logger.info(
+                f"[WeFlowChannel] Assets cleanup: removed={result['removed']} failed={result['failed']}"
+            )
+
+    def get_int_config(self, key: str, default: int) -> int:
+        try:
+            return int(conf().get(key, default))
+        except (TypeError, ValueError):
+            return default
 
     def fetch_referenced_message_direct(self, session_id: str, referenced_message_id: str):
         try:
