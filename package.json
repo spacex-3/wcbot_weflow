@@ -6,8 +6,9 @@
     "type": "module",
     "scripts": {
         "build": "tsc",
-        "start": "node dist/index.js",
-        "dev": "tsx src/index.ts"
+        "start": "node scripts/weflow-host.mjs start",
+        "dev": "node scripts/weflow-host.mjs dev",
+        "test": "tsx --test test/*.test.ts"
     },
     "dependencies": {
         "better-sqlite3": "^12.5.0",

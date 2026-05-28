@@ -46,6 +46,44 @@ interface Message {
     referencedMessageId?: string;
 }
 
+function pickFirstStringField(row: Record<string, any>, fields: string[]): string {
+    for (const field of fields) {
+        const value = row?.[field];
+        if (typeof value === 'string' && value.trim()) {
+            return value.trim();
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            return String(value);
+        }
+    }
+    return '';
+}
+
+export function pickContactUsername(row: Record<string, any>): string {
+    return pickFirstStringField(row, ['username', 'user_name', 'userName', 'wxid', 'wx_id']);
+}
+
+export function pickContactDisplayName(row: Record<string, any>, displayNames: Record<string, string>): string {
+    const username = pickContactUsername(row);
+    return (
+        (username && displayNames[username]) ||
+        pickFirstStringField(row, [
+            'remark',
+            'Remark',
+            'displayName',
+            'display_name',
+            'nick_name',
+            'nickName',
+            'nickname',
+            'NickName',
+            'alias',
+            'Alias',
+            'name',
+        ]) ||
+        username
+    );
+}
+
 export class HttpService {
     private server: http.Server | null = null;
     private port: number;
@@ -151,6 +189,8 @@ export class HttpService {
         try {
             if (pathname === '/health' || pathname === '/api/v1/health') {
                 this.sendJson(res, { status: 'ok' });
+            } else if (pathname === '/api/v1/message') {
+                await this.handleMessageByServerId(url, res);
             } else if (pathname === '/api/v1/messages') {
                 await this.handleMessages(url, res);
             } else if (pathname === '/api/v1/sessions') {
@@ -214,6 +254,39 @@ export class HttpService {
         }
     }
 
+    private async handleMessageByServerId(url: URL, res: http.ServerResponse): Promise<void> {
+        const talker = url.searchParams.get('talker');
+        const serverId = url.searchParams.get('serverId') || url.searchParams.get('platformMessageId');
+
+        if (!talker) {
+            this.sendError(res, 400, 'Missing required parameter: talker');
+            return;
+        }
+        if (!serverId) {
+            this.sendError(res, 400, 'Missing required parameter: serverId');
+            return;
+        }
+
+        const wcdb = getWcdbCore();
+        const result = await wcdb.getMessageByServerId(talker, serverId);
+        if (!result.success) {
+            this.sendError(res, 501, result.error || 'Failed to get message by serverId');
+            return;
+        }
+        if (!result.data) {
+            this.sendError(res, 404, 'Message not found');
+            return;
+        }
+
+        const config = getConfig();
+        const message = this.rowToMessage(result.data, talker, config.myWxid);
+        this.sendJson(res, {
+            success: true,
+            talker,
+            message,
+        });
+    }
+
     private async collectMessages(
         sessionId: string,
         offset: number,
@@ -260,47 +333,12 @@ export class HttpService {
                         }
                     }
 
-                    const content = this.decodeMessageContent(row.message_content, row.compress_content);
-                    const localType = parseInt(row.local_type || row.type || '1', 10);
-                    const senderUsername = row.sender_username || '';
-                    const isSendRaw = row.computed_is_send ?? row.is_send ?? '0';
-                    const isSend = parseInt(isSendRaw, 10) === 1;
-                    const localId = parseInt(row.local_id || row.localId || '0', 10);
-
                     if (skipped < offset) {
                         skipped++;
                         continue;
                     }
 
-                    // 提取 XML 中的 type
-                    const xmlType = this.extractMessageXmlType(content, localType) || undefined;
-                    const linkUrl = this.extractLinkUrl(content, localType) || undefined;
-                    const referencedMessageId = this.isReplyMessage(localType, xmlType)
-                        ? this.extractReferencedMessageId(content)
-                        : undefined;
-
-                    const parsedContent = this.parseMessageContent(content, localType);
-
-                    // 判断是否是自己发送的消息
-                    const isSelfMessage = isSend || this.isSelfSender(senderUsername, myWxid);
-
-                    const serverId = row.server_id ?? row.serverId ?? '';
-                    const message: Message = {
-                        localId,
-                        serverId: serverId ? String(serverId) : '',
-                        localType,
-                        createTime,
-                        sortSeq: parseInt(row.sort_seq || row.sortSeq || row.sequence || String(createTime), 10),
-                        isSend: isSelfMessage ? 1 : 0,
-                        senderUsername: isSelfMessage ? myWxid : senderUsername || sessionId,
-                        parsedContent: parsedContent || `[类型 ${localType}]`,
-                        rawContent: content,
-                        xmlType,
-                        url: linkUrl,
-                        referencedMessageId,
-                    };
-
-                    rows.push(message);
+                    rows.push(this.rowToMessage(row, sessionId, myWxid));
 
                     if (rows.length >= limit) {
                         break;
@@ -314,6 +352,40 @@ export class HttpService {
         }
 
         return rows;
+    }
+
+    private rowToMessage(row: Record<string, any>, sessionId: string, myWxid: string): Message {
+        const content = this.decodeMessageContent(row.message_content, row.compress_content);
+        const localType = parseInt(row.local_type || row.type || '1', 10);
+        const senderUsername = row.sender_username || '';
+        const isSendRaw = row.computed_is_send ?? row.is_send ?? '0';
+        const isSend = parseInt(isSendRaw, 10) === 1;
+        const localId = parseInt(row.local_id || row.localId || '0', 10);
+        const createTime = parseInt(row.create_time || '0', 10);
+
+        const xmlType = this.extractMessageXmlType(content, localType) || undefined;
+        const linkUrl = this.extractLinkUrl(content, localType) || undefined;
+        const referencedMessageId = this.isReplyMessage(localType, xmlType)
+            ? this.extractReferencedMessageId(content)
+            : undefined;
+        const parsedContent = this.parseMessageContent(content, localType);
+        const isSelfMessage = isSend || this.isSelfSender(senderUsername, myWxid);
+        const serverId = row.server_id ?? row.serverId ?? '';
+
+        return {
+            localId,
+            serverId: serverId ? String(serverId) : '',
+            localType,
+            createTime,
+            sortSeq: parseInt(row.sort_seq || row.sortSeq || row.sequence || String(createTime), 10),
+            isSend: isSelfMessage ? 1 : 0,
+            senderUsername: isSelfMessage ? myWxid : senderUsername || sessionId,
+            parsedContent: parsedContent || `[类型 ${localType}]`,
+            rawContent: content,
+            xmlType,
+            url: linkUrl,
+            referencedMessageId,
+        };
     }
 
     private decodeMessageContent(messageContent: any, compressContent: any): string {
@@ -769,7 +841,7 @@ export class HttpService {
         const result = await wcdb.execQuery(
             'contact',
             null,
-            'SELECT username, remark, nick_name, alias, local_type FROM contact'
+            'SELECT * FROM contact'
         );
 
         if (!result.success || !result.data) {
@@ -777,15 +849,37 @@ export class HttpService {
             return;
         }
 
-        let contacts = result.data;
+        const displayNamesResult = await wcdb.getDisplayNames(
+            result.data.map((contact: any) => pickContactUsername(contact)).filter(Boolean)
+        );
+        const displayNames = displayNamesResult.success && displayNamesResult.data ? displayNamesResult.data : {};
+        let contacts = result.data.map((contact: any) => {
+            const username = pickContactUsername(contact);
+            const displayName = pickContactDisplayName(contact, displayNames);
+            const nickname = pickFirstStringField(contact, ['nick_name', 'nickName', 'nickname', 'NickName']);
+            const remark = pickFirstStringField(contact, ['remark', 'Remark']);
+            const alias = pickFirstStringField(contact, ['alias', 'Alias']);
+
+            return {
+                raw: contact,
+                username,
+                displayName,
+                name: displayName,
+                nickname,
+                remark,
+                alias,
+            };
+        }).filter((contact: any) => contact.username);
 
         if (keyword) {
             const lowerKeyword = keyword.toLowerCase();
             contacts = contacts.filter(
                 (c: any) =>
                     c.username?.toLowerCase().includes(lowerKeyword) ||
-                    c.nick_name?.toLowerCase().includes(lowerKeyword) ||
-                    c.remark?.toLowerCase().includes(lowerKeyword)
+                    c.displayName?.toLowerCase().includes(lowerKeyword) ||
+                    c.nickname?.toLowerCase().includes(lowerKeyword) ||
+                    c.remark?.toLowerCase().includes(lowerKeyword) ||
+                    c.alias?.toLowerCase().includes(lowerKeyword)
             );
         }
 
@@ -796,7 +890,9 @@ export class HttpService {
             count: limited.length,
             contacts: limited.map((c: any) => ({
                 username: c.username,
-                nickname: c.nick_name,
+                displayName: c.displayName,
+                name: c.name,
+                nickname: c.nickname,
                 remark: c.remark,
                 alias: c.alias,
             })),

@@ -48,11 +48,50 @@ interface ProcessedMessage {
     createTime: number;
     isSend: number;
     senderUsername: string;
+    senderName?: string;
     parsedContent: string;
     rawContent: string;
     xmlType?: string;
     url?: string;
     referencedMessageId?: string;
+}
+
+interface NewMessageNotificationInput {
+    sessionId: string;
+    sender: string;
+    senderName?: string;
+    timestamp: number;
+    type: number;
+    content: string | null;
+    referencedPlatformMessageId?: string;
+    url?: string;
+    platformMessageId?: string;
+    now?: number;
+}
+
+export function resolveDisplayName(username: string, displayNames: Record<string, string>): string {
+    if (!username) return '';
+    return displayNames[username] || displayNames[username.toLowerCase()] || username;
+}
+
+export function buildNewMessageNotification(input: NewMessageNotificationInput): any {
+    const senderName = input.senderName || input.sender;
+    return {
+        type: 'new_message',
+        sessionId: input.sessionId,
+        message: {
+            sender: input.sender,
+            senderName,
+            senderDisplayName: senderName,
+            timestamp: input.timestamp,
+            type: input.type,
+            content: input.content,
+            referencedPlatformMessageId: input.referencedPlatformMessageId,
+            url: input.url,
+            platformMessageId: input.platformMessageId,
+        },
+        timestamp: input.now ?? Date.now(),
+    };
 }
 
 export class WsService {
@@ -576,10 +615,25 @@ export class WsService {
             // 有新消息才广播
             if (newMessages.length > 0) {
                 newMessages.reverse();
+                const senderIds = Array.from(new Set(newMessages.map((msg) => msg.senderUsername).filter(Boolean)));
+                const displayNamesResult = await wcdb.getDisplayNames(senderIds);
+                const displayNames = displayNamesResult.success && displayNamesResult.data ? displayNamesResult.data : {};
+                let groupNicknames: Record<string, string> = {};
+
+                if (sessionId.endsWith('@chatroom')) {
+                    const groupNicknamesResult = await wcdb.getGroupNicknames(sessionId);
+                    groupNicknames = groupNicknamesResult.success && groupNicknamesResult.data ? groupNicknamesResult.data : {};
+                }
 
                 for (const msg of newMessages) {
+                    const senderName = groupNicknames[msg.senderUsername] ||
+                        groupNicknames[msg.senderUsername.toLowerCase()] ||
+                        resolveDisplayName(msg.senderUsername, displayNames);
                     const preview = this.truncateMessagePreview(msg.parsedContent || '', 20);
-                    console.log(`[\u65b0\u6d88\u606f] ${msg.senderUsername} \u63a8\u9001\u4e86 1 \u6761\u6d88\u606f ${preview}`);
+                    const senderLabel = senderName && senderName !== msg.senderUsername
+                        ? `${senderName}(${msg.senderUsername})`
+                        : msg.senderUsername;
+                    console.log(`[\u65b0\u6d88\u606f] ${senderLabel} \u63a8\u9001\u4e86 1 \u6761\u6d88\u606f ${preview}`);
 
                     // 使用 mapMessageType 转换消息类型
                     const chatlabType = this.mapMessageType(msg.localType, msg.xmlType);
@@ -587,20 +641,17 @@ export class WsService {
                         ? (msg.url || this.extractLinkUrl(msg.rawContent, msg.localType) || undefined)
                         : undefined;
 
-                    const notification = {
-                        type: 'new_message',
+                    const notification = buildNewMessageNotification({
                         sessionId,
-                        message: {
-                            sender: msg.senderUsername,
-                            timestamp: msg.createTime,
-                            type: chatlabType,
-                            content: msg.parsedContent,
-                            referencedPlatformMessageId: chatlabType === ChatLabType.REPLY ? msg.referencedMessageId : undefined,
-                            url,
-                            platformMessageId: msg.serverId || undefined,
-                        },
-                        timestamp: Date.now(),
-                    };
+                        sender: msg.senderUsername,
+                        senderName,
+                        timestamp: msg.createTime,
+                        type: chatlabType,
+                        content: msg.parsedContent,
+                        referencedPlatformMessageId: chatlabType === ChatLabType.REPLY ? msg.referencedMessageId : undefined,
+                        url,
+                        platformMessageId: msg.serverId || undefined,
+                    });
                     this.broadcast(notification, sessionId);
                 }
             }
@@ -1046,6 +1097,8 @@ export class WsService {
             sessionId,
             message: {
                 sender: message.sender,
+                senderName: message.senderName || message.senderDisplayName || message.sender,
+                senderDisplayName: message.senderDisplayName || message.senderName || message.sender,
                 timestamp: message.timestamp,
                 type: message.type,
                 content: message.content,

@@ -9,10 +9,157 @@ import { execSync } from 'child_process';
 import { uptime } from 'os';
 import { getConfig } from './config.js';
 
+type EnvLike = Record<string, string | undefined>;
+
+interface WcdbDllCandidateOptions {
+    resourcesPath: string;
+    cwd?: string;
+    platform?: NodeJS.Platform;
+    arch?: NodeJS.Architecture;
+    processResourcesPath?: string;
+    env?: EnvLike;
+}
+
+interface ProtectionResourceCandidateOptions {
+    dllPath: string;
+    resourcesPath: string;
+    cwd?: string;
+    processResourcesPath?: string;
+}
+
+interface DllSearchPathOptions {
+    dllPath: string;
+    resourcesPath: string;
+    cwd?: string;
+    platform?: NodeJS.Platform;
+    arch?: NodeJS.Architecture;
+}
+
+interface MonitorCloseDecisionOptions {
+    wasConnected: boolean;
+    hadError: boolean;
+    isStopping: boolean;
+    hasCallback: boolean;
+}
+
+interface MonitorUnavailableDecisionOptions {
+    retryCount: number;
+    maxRetries: number;
+}
+
 interface WcdbResult<T = any> {
     success: boolean;
     data?: T;
     error?: string;
+}
+
+const DEFAULT_MONITOR_PIPE_PATH = '\\\\.\\pipe\\weflow_monitor';
+
+function uniquePaths(paths: Array<string | null | undefined>): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+
+    for (const path of paths) {
+        if (!path) continue;
+        if (seen.has(path)) continue;
+        seen.add(path);
+        result.push(path);
+    }
+
+    return result;
+}
+
+function getProcessResourcesPath(): string | undefined {
+    return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+}
+
+export function buildWcdbDllCandidates(options: WcdbDllCandidateOptions): string[] {
+    const env = options.env || process.env;
+    if (env.WCDB_DLL_PATH) {
+        return [env.WCDB_DLL_PATH];
+    }
+
+    const cwd = options.cwd || process.cwd();
+    const platform = options.platform || process.platform;
+    const arch = options.arch || process.arch;
+    const processResourcesPath = options.processResourcesPath;
+
+    const isMac = platform === 'darwin';
+    const isLinux = platform === 'linux';
+    const isArm64 = arch === 'arm64';
+    const libName = isMac ? 'libwcdb_api.dylib' : isLinux ? 'libwcdb_api.so' : 'wcdb_api.dll';
+    const legacySubDir = isMac ? 'macos' : isLinux ? 'linux' : (isArm64 ? 'arm64' : '');
+    const platformDir = isMac ? 'macos' : (isLinux ? 'linux' : 'win32');
+    const archDir = isMac ? 'universal' : (isArm64 ? 'arm64' : 'x64');
+    const defaultResourcesPath = processResourcesPath || join(cwd, 'resources');
+    const roots = uniquePaths([
+        env.WCDB_RESOURCES_PATH,
+        options.resourcesPath,
+        join(defaultResourcesPath, 'resources'),
+        defaultResourcesPath,
+        join(cwd, 'resources'),
+    ]);
+    const normalizedArch = isArm64 ? 'arm64' : 'x64';
+    const relativeCandidates = [
+        join('wcdb', platformDir, archDir, libName),
+        join('wcdb', platformDir, normalizedArch, libName),
+        join('wcdb', platformDir, 'x64', libName),
+        join('wcdb', platformDir, 'universal', libName),
+        join('wcdb', platformDir, libName),
+    ];
+    const candidates: string[] = [];
+
+    for (const root of roots) {
+        for (const relativePath of relativeCandidates) {
+            candidates.push(join(root, relativePath));
+        }
+        candidates.push(join(root, legacySubDir, libName));
+        candidates.push(join(root, libName));
+    }
+
+    return uniquePaths(candidates);
+}
+
+export function buildProtectionResourceCandidates(options: ProtectionResourceCandidateOptions): string[] {
+    const cwd = options.cwd || process.cwd();
+    const dllDir = dirname(options.dllPath);
+
+    return uniquePaths([
+        dllDir,
+        dirname(dllDir),
+        options.processResourcesPath,
+        options.processResourcesPath ? join(options.processResourcesPath, 'resources') : null,
+        options.resourcesPath,
+        join(cwd, 'resources'),
+    ]);
+}
+
+export function buildDllSearchPaths(options: DllSearchPathOptions): string[] {
+    const cwd = options.cwd || process.cwd();
+    const platform = options.platform || process.platform;
+    const arch = options.arch || process.arch;
+    const dllDir = dirname(options.dllPath);
+    const archDir = arch === 'arm64' ? 'arm64' : 'x64';
+
+    if (platform !== 'win32') {
+        return uniquePaths([dllDir, options.resourcesPath, join(cwd, 'resources')]);
+    }
+
+    return uniquePaths([
+        dllDir,
+        options.resourcesPath,
+        join(options.resourcesPath, 'runtime', 'win32'),
+        join(options.resourcesPath, 'key', 'win32', archDir),
+        join(cwd, 'resources'),
+    ]);
+}
+
+export function shouldRestartMonitorAfterClose(options: MonitorCloseDecisionOptions): boolean {
+    return options.hasCallback && !options.isStopping && options.wasConnected && !options.hadError;
+}
+
+export function shouldNotifyMonitorUnavailable(options: MonitorUnavailableDecisionOptions): boolean {
+    return options.retryCount >= options.maxRetries;
 }
 
 export class WcdbCore {
@@ -30,6 +177,7 @@ export class WcdbCore {
     private lastDllLogTime = 0;
 
     // DLL 函数引用
+    private wcdbInitProtection: any = null;
     private wcdbInit: any = null;
     private wcdbShutdown: any = null;
     private wcdbOpenAccount: any = null;
@@ -38,6 +186,7 @@ export class WcdbCore {
     private wcdbFreeString: any = null;
     private wcdbGetSessions: any = null;
     private wcdbGetMessages: any = null;
+    private wcdbGetMessageByServerId: any = null;
     private wcdbGetNewMessages: any = null;
     private wcdbGetMessageCount: any = null;
     private wcdbGetDisplayNames: any = null;
@@ -53,6 +202,7 @@ export class WcdbCore {
     private wcdbListMediaDbs: any = null;
     private wcdbStartMonitorPipe: any = null;
     private wcdbStopMonitorPipe: any = null;
+    private wcdbGetMonitorPipeName: any = null;
     private wcdbGetLogs: any = null;
 
     private monitorCallback: ((type: string, json: string) => void) | null = null;
@@ -60,6 +210,8 @@ export class WcdbCore {
     private monitorReconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private monitorPipeConnected = false;
     private monitorStopping = false;
+    private monitorPipeUnavailable = false;
+    private monitorPipePath = DEFAULT_MONITOR_PIPE_PATH;
 
     constructor() {
         const config = getConfig();
@@ -114,16 +266,95 @@ export class WcdbCore {
     }
 
     private getDllPath(): string {
-        const candidates = [
-            join(this.resourcesPath, 'wcdb_api.dll'),
-            join(process.cwd(), 'resources', 'wcdb_api.dll'),
-        ];
+        const candidates = buildWcdbDllCandidates({
+            resourcesPath: this.resourcesPath,
+            processResourcesPath: getProcessResourcesPath(),
+        });
 
         for (const path of candidates) {
             if (existsSync(path)) return path;
         }
 
-        return candidates[0];
+        return candidates[0] || join(this.resourcesPath, 'wcdb_api.dll');
+    }
+
+    private prependDllSearchPaths(dllPath: string): void {
+        const paths = buildDllSearchPaths({
+            dllPath,
+            resourcesPath: this.resourcesPath,
+        }).filter((path) => existsSync(path));
+        if (paths.length === 0) return;
+
+        const sep = process.platform === 'win32' ? ';' : ':';
+        const existingPath = process.env.PATH || process.env.Path || '';
+        const existingParts = existingPath.split(sep).filter(Boolean);
+        const nextPath = uniquePaths([...paths, ...existingParts]).join(sep);
+
+        process.env.PATH = nextPath;
+        if (process.platform === 'win32') {
+            process.env.Path = nextPath;
+        }
+        process.env.WCDB_RESOURCES_PATH = this.resourcesPath;
+        this.writeLog(`DLL 搜索路径已优先使用: ${paths.join(sep)}`);
+    }
+
+    private formatInitProtectionError(code: number): string {
+        const messages: Record<number, string> = {
+            '-1006': '数据服务安全校验失败，请确认 resources 目录与 DLL 为同一版本',
+            '-2301': '动态库加载失败，请检查 resources 是否完整',
+            '-2302': 'WCDB 初始化异常，请重试',
+            '-2303': 'WCDB 未能成功初始化',
+        };
+        const message = messages[code];
+        return message ? `${message} (错误码: ${code})` : `操作失败，错误码: ${code}`;
+    }
+
+    private scoreInitProtectionFailure(code: number): number {
+        if (code >= -2212 && code <= -2201) return 0;
+        if (code === -102 || code === -101 || code === -1006) return 1;
+        return 2;
+    }
+
+    private runInitProtection(dllPath: string): boolean {
+        try {
+            this.wcdbInitProtection = this.lib.func('int32 InitProtection(const char* resourcePath)');
+        } catch (e) {
+            this.writeLog(`InitProtection 符号加载失败: ${e}`, true);
+            return false;
+        }
+
+        const resourcePaths = buildProtectionResourceCandidates({
+            dllPath,
+            resourcesPath: this.resourcesPath,
+            processResourcesPath: getProcessResourcesPath(),
+        });
+        let protectionCode = -1;
+        let bestFailCode: number | null = null;
+
+        for (const resourcePath of resourcePaths) {
+            try {
+                this.writeLog(`InitProtection 调用: ${resourcePath}`);
+                protectionCode = Number(this.wcdbInitProtection(resourcePath));
+                if (protectionCode === 0) {
+                    this.writeLog(`InitProtection 成功: ${resourcePath}`);
+                    return true;
+                }
+
+                if (
+                    bestFailCode === null ||
+                    this.scoreInitProtectionFailure(protectionCode) < this.scoreInitProtectionFailure(bestFailCode)
+                ) {
+                    bestFailCode = protectionCode;
+                }
+                this.writeLog(`InitProtection 失败: ${protectionCode}, path=${resourcePath}`, true);
+            } catch (e) {
+                this.writeLog(`InitProtection 异常: ${e}, path=${resourcePath}`, true);
+            }
+        }
+
+        const finalCode = bestFailCode ?? protectionCode;
+        this.writeLog(`InitProtection 全部失败: ${this.formatInitProtectionError(finalCode)}`, true);
+        return false;
     }
 
     private findSessionDb(dir: string, depth = 0): string | null {
@@ -222,6 +453,8 @@ export class WcdbCore {
 
             // 预加载依赖 DLL
             const dllDir = dirname(dllPath);
+            this.prependDllSearchPaths(dllPath);
+
             const wcdbCorePath = join(dllDir, 'WCDB.dll');
             if (existsSync(wcdbCorePath)) {
                 try {
@@ -244,6 +477,10 @@ export class WcdbCore {
 
             this.lib = this.koffi.load(dllPath);
 
+            if (!this.runInitProtection(dllPath)) {
+                return false;
+            }
+
             // 定义函数
             this.wcdbInit = this.lib.func('int32 wcdb_init()');
             this.wcdbShutdown = this.lib.func('int32 wcdb_shutdown()');
@@ -252,6 +489,11 @@ export class WcdbCore {
             this.wcdbFreeString = this.lib.func('void wcdb_free_string(void* ptr)');
             this.wcdbGetSessions = this.lib.func('int32 wcdb_get_sessions(int64 handle, _Out_ void** outJson)');
             this.wcdbGetMessages = this.lib.func('int32 wcdb_get_messages(int64 handle, const char* username, int32 limit, int32 offset, _Out_ void** outJson)');
+            try {
+                this.wcdbGetMessageByServerId = this.lib.func('int32 wcdb_get_message_by_svrid(int64 handle, const char* sessionId, const char* svrid, _Out_ void** outJson)');
+            } catch {
+                this.wcdbGetMessageByServerId = null;
+            }
             this.wcdbGetMessageCount = this.lib.func('int32 wcdb_get_message_count(int64 handle, const char* username, _Out_ int32* outCount)');
             this.wcdbGetDisplayNames = this.lib.func('int32 wcdb_get_display_names(int64 handle, const char* usernamesJson, _Out_ void** outJson)');
             this.wcdbGetAvatarUrls = this.lib.func('int32 wcdb_get_avatar_urls(int64 handle, const char* usernamesJson, _Out_ void** outJson)');
@@ -297,10 +539,17 @@ export class WcdbCore {
                 this.wcdbStopMonitorPipe = null;
             }
 
+            try {
+                this.wcdbGetMonitorPipeName = this.lib.func('int32 wcdb_get_monitor_pipe_name(_Out_ void** outName)');
+            } catch {
+                this.wcdbGetMonitorPipeName = null;
+            }
+
             // 初始化 WCDB
             const initResult = this.wcdbInit();
             if (initResult !== 0) {
-                this.writeLog(`WCDB 初始化失败: ${initResult}`, true);
+                this.writeLog(`WCDB 初始化失败: ${this.formatInitProtectionError(initResult)}`, true);
+                this.logDllDiagnostics(`wcdb_init failed: ${initResult}`);
                 return false;
             }
 
@@ -439,6 +688,7 @@ export class WcdbCore {
         }
 
         this.monitorStopping = false;
+        this.monitorPipeUnavailable = false;
         this.monitorCallback = callback;
 
         // 先强力清理残留管道和可能的僵尸进程
@@ -447,15 +697,45 @@ export class WcdbCore {
         // 尝试启动管道服务，带重试
         const started = this.tryStartPipeWithRetry();
         if (started) {
-            this.writeLog('Monitor pipe server started, connecting client...');
-            this.connectMonitorPipe(0);
+            const pipePath = this.getMonitorPipePath();
+            this.writeLog(`Monitor pipe server started, connecting client: ${pipePath}`);
+            this.connectMonitorPipe(0, pipePath);
             return true;
         }
 
-        this.writeLog('startMonitor: pipe server failed after retries, will keep retrying in background');
-        // 即使首次失败也返回 true，后台持续重试
-        this.scheduleMonitorRetry();
+        this.notifyMonitorUnavailable('pipe server failed after startup retries');
         return true;
+    }
+
+    private getMonitorPipePath(): string {
+        if (!this.wcdbGetMonitorPipeName) {
+            this.monitorPipePath = DEFAULT_MONITOR_PIPE_PATH;
+            return this.monitorPipePath;
+        }
+
+        const outPtr = [null as any];
+        try {
+            const result = this.wcdbGetMonitorPipeName(outPtr);
+            if (result === 0 && outPtr[0]) {
+                const pipePath = String(this.koffi.decode(outPtr[0], 'char', -1) || '').trim();
+                if (pipePath) {
+                    this.monitorPipePath = pipePath;
+                    return pipePath;
+                }
+            }
+            this.writeLog(`wcdb_get_monitor_pipe_name failed or empty, using fallback pipe: ${result}`);
+        } catch (e) {
+            this.writeLog(`wcdb_get_monitor_pipe_name threw, using fallback pipe: ${e}`);
+        } finally {
+            if (outPtr[0] && this.wcdbFreeString) {
+                try {
+                    this.wcdbFreeString(outPtr[0]);
+                } catch { }
+            }
+        }
+
+        this.monitorPipePath = DEFAULT_MONITOR_PIPE_PATH;
+        return this.monitorPipePath;
     }
 
     /**
@@ -605,25 +885,29 @@ export class WcdbCore {
     /**
      * 连接到命名管道客户端，带自动重连
      */
-    private connectMonitorPipe(retryCount: number): void {
-        if (this.monitorStopping || !this.monitorCallback) return;
+    private connectMonitorPipe(retryCount: number, pipePath = this.monitorPipePath): void {
+        if (this.monitorStopping || !this.monitorCallback || this.monitorPipeUnavailable) return;
 
         const MAX_CONNECT_RETRIES = 5;
-        const PIPE_PATH = '\\\\.\\pipe\\weflow_monitor';
+        this.monitorPipePath = pipePath;
         // 首次连接等 200ms 让 DLL 管道服务器就绪，重试时递增延迟
         const delay = retryCount === 0 ? 200 : Math.min(500 * retryCount, 5000);
 
+        this.clearMonitorReconnectTimer();
         this.monitorReconnectTimer = setTimeout(() => {
             this.monitorReconnectTimer = null;
-            if (this.monitorStopping || !this.monitorCallback) return;
+            if (this.monitorStopping || !this.monitorCallback || this.monitorPipeUnavailable) return;
 
             import('net').then((net) => {
-                if (this.monitorStopping || !this.monitorCallback) return;
+                if (this.monitorStopping || !this.monitorCallback || this.monitorPipeUnavailable) return;
 
                 this.writeLog(`Monitor pipe connecting (attempt ${retryCount + 1})...`);
+                let clientHadError = false;
+                let clientConnected = false;
 
-                const client = net.createConnection(PIPE_PATH, () => {
+                const client = net.createConnection(pipePath, () => {
                     this.writeLog('Monitor pipe connected');
+                    clientConnected = true;
                     this.monitorPipeConnected = true;
                 });
 
@@ -648,31 +932,36 @@ export class WcdbCore {
                 });
 
                 client.on('error', (err: NodeJS.ErrnoException) => {
+                    clientHadError = true;
                     const code = err.code ? ` code=${err.code}` : '';
                     const errno = typeof err.errno === 'number' ? ` errno=${err.errno}` : '';
                     this.writeLog(`Monitor pipe error:${code}${errno} ${err.message}`);
                     this.monitorPipeConnected = false;
 
                     // 连接失败时自动重试
-                    if (!this.monitorStopping && this.monitorCallback) {
-                        if (retryCount < MAX_CONNECT_RETRIES) {
+                    if (!this.monitorStopping && this.monitorCallback && !this.monitorPipeUnavailable) {
+                        if (!shouldNotifyMonitorUnavailable({ retryCount, maxRetries: MAX_CONNECT_RETRIES })) {
                             this.writeLog(`Monitor pipe will reconnect (attempt ${retryCount + 2}/${MAX_CONNECT_RETRIES + 1})...`);
-                            this.connectMonitorPipe(retryCount + 1);
+                            this.connectMonitorPipe(retryCount + 1, pipePath);
                         } else {
-                            // 连接重试用尽，尝试重新启动整个管道
-                            this.writeLog('Monitor pipe connect retries exhausted, will restart pipe server...');
-                            this.scheduleMonitorRetry();
+                            this.notifyMonitorUnavailable(`pipe connect retries exhausted: ${err.message}`);
                         }
                     }
                 });
 
                 client.on('close', () => {
                     this.writeLog('Monitor pipe closed');
-                    this.monitorPipeClient = null;
+                    if (this.monitorPipeClient === client) {
+                        this.monitorPipeClient = null;
+                    }
                     this.monitorPipeConnected = false;
 
-                    // 非主动关闭时自动重连
-                    if (!this.monitorStopping && this.monitorCallback) {
+                    if (shouldRestartMonitorAfterClose({
+                        wasConnected: clientConnected,
+                        hadError: clientHadError,
+                        isStopping: this.monitorStopping,
+                        hasCallback: this.monitorCallback !== null,
+                    })) {
                         this.writeLog('Monitor pipe unexpectedly closed, will restart...');
                         this.scheduleMonitorRetry();
                     }
@@ -687,7 +976,7 @@ export class WcdbCore {
      * 计划重新启动整个管道监控（stop → start → connect）
      */
     private scheduleMonitorRetry(): void {
-        if (this.monitorStopping || !this.monitorCallback) return;
+        if (this.monitorStopping || !this.monitorCallback || this.monitorPipeUnavailable) return;
 
         // 清理现有连接
         if (this.monitorPipeClient) {
@@ -698,23 +987,53 @@ export class WcdbCore {
         }
 
         // 3 秒后重试整个流程
+        this.clearMonitorReconnectTimer();
         this.monitorReconnectTimer = setTimeout(() => {
             this.monitorReconnectTimer = null;
-            if (this.monitorStopping || !this.monitorCallback) return;
+            if (this.monitorStopping || !this.monitorCallback || this.monitorPipeUnavailable) return;
 
             this.writeLog('Monitor: retrying full pipe startup...');
             const started = this.tryStartPipeWithRetry();
             if (started) {
-                this.connectMonitorPipe(0);
+                const pipePath = this.getMonitorPipePath();
+                this.connectMonitorPipe(0, pipePath);
             } else {
-                this.writeLog('Monitor: pipe restart failed, will notify callback to use fallback');
                 this.logDllDiagnostics('monitor: pipe restart failed');
-                // 通知上层监控不可用，让 wsService 启用轮询备用方案
-                if (this.monitorCallback) {
-                    this.monitorCallback('monitor_unavailable', '{}');
-                }
+                this.notifyMonitorUnavailable('pipe restart failed');
             }
         }, 3000);
+    }
+
+    private clearMonitorReconnectTimer(): void {
+        if (!this.monitorReconnectTimer) return;
+        clearTimeout(this.monitorReconnectTimer);
+        this.monitorReconnectTimer = null;
+    }
+
+    private notifyMonitorUnavailable(reason: string): void {
+        if (this.monitorPipeUnavailable) return;
+
+        this.monitorPipeUnavailable = true;
+        this.monitorPipeConnected = false;
+        this.clearMonitorReconnectTimer();
+
+        if (this.monitorPipeClient) {
+            try {
+                this.monitorPipeClient.destroy();
+            } catch { }
+            this.monitorPipeClient = null;
+        }
+
+        if (this.wcdbStopMonitorPipe) {
+            try {
+                this.wcdbStopMonitorPipe();
+            } catch { }
+        }
+
+        this.writeLog(`Monitor pipe unavailable, switching to fallback polling: ${reason}`, true);
+        if (this.monitorCallback) {
+            this.monitorCallback('monitor_unavailable', '{}');
+        }
     }
 
     /** 检查管道监控是否活跃连接中 */
@@ -724,13 +1043,11 @@ export class WcdbCore {
 
     stopMonitor(): void {
         this.monitorStopping = true;
+        this.monitorPipeUnavailable = false;
         this.monitorPipeConnected = false;
 
         // 清理重连定时器
-        if (this.monitorReconnectTimer) {
-            clearTimeout(this.monitorReconnectTimer);
-            this.monitorReconnectTimer = null;
-        }
+        this.clearMonitorReconnectTimer();
 
         if (this.monitorPipeClient) {
             try {
@@ -859,6 +1176,40 @@ export class WcdbCore {
 
             const rows = JSON.parse(jsonStr);
             return { success: true, data: { rows, hasMore: hasMoreOut[0] === 1 } };
+        } catch (e) {
+            return { success: false, error: String(e) };
+        }
+        });
+    }
+
+    async getMessageByServerId(sessionId: string, serverId: string): Promise<WcdbResult<any | null>> {
+        return this.runSerialized(async () => {
+        if (!this.isConnected()) {
+            return { success: false, error: '数据库未连接' };
+        }
+        if (!this.wcdbGetMessageByServerId) {
+            return { success: false, error: '当前 WCDB DLL 不支持按 serverId 查询消息' };
+        }
+
+        try {
+            const outPtr = [null as any];
+            const result = this.wcdbGetMessageByServerId(this.handle, sessionId, serverId, outPtr);
+
+            if (result !== 0) {
+                return { success: false, error: `查询消息失败: ${result}` };
+            }
+
+            const jsonStr = this.decodeJsonPtr(outPtr[0]);
+            if (!jsonStr) {
+                return { success: true, data: null };
+            }
+
+            const row = JSON.parse(jsonStr);
+            if (!row || Object.keys(row).length === 0) {
+                return { success: true, data: null };
+            }
+
+            return { success: true, data: row };
         } catch (e) {
             return { success: false, error: String(e) };
         }

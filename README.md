@@ -1,295 +1,255 @@
-# WeFlow API CLI
+# New WeChat Bot
 
-微信聊天记录 HTTP API 和 WebSocket 实时推送服务。
+这个仓库包含两部分：
 
-这是 [WeFlow](https://github.com/hicccc77/WeFlow) 项目的 CLI 版本，去除了所有 UI 前端，只保留后端 API 查询接口和 WebSocket 增量推送功能。
+- `weflow-api-cli`：基于 WeFlow/WCDB 的微信聊天记录 HTTP API 与 WebSocket 实时推送服务。
+- `0.wechat-gptbot-wcf-20260423bk`：微信机器人项目，已接入 `wechat_channel: weflow`，通过 WeFlow API 读取消息并用 OpenAI 兼容接口回复。
 
-## 功能特性
+当前版本重点解决了 Windows 下新版 WeFlow/WCDB DLL 的宿主校验、动态监控管道、联系人显示名、以及微信引用消息对接问题。
 
-- **HTTP API**: 提供 REST 接口查询会话、消息、联系人
-- **WebSocket**: 实时推送数据库变更和新消息通知
-- **ChatLab 格式**: 支持标准化的 ChatLab 格式输出
-- **独立运行**: 可在终端直接运行，无需 Electron
+## 功能
 
-## 快速开始
+- HTTP API 查询会话、消息、联系人和单条消息。
+- WebSocket 实时推送新消息，包含 `senderName` / `senderDisplayName`。
+- Windows 自动使用 `.runtime/weflow.exe` 作为 WCDB 宿主进程，绕过新版 DLL 对 `node.exe` 的安全校验。
+- 支持动态 monitor pipe 名称；管道不可用时自动切换轮询。
+- Bot 支持引用消息：
+  - 引用文本：把被引用文本和用户追问一起发给模型。
+  - 引用图片：复用已解密图片缓存，或按时间戳兜底解密，再按 OpenAI `image_url` 多模态格式发给模型。
+  - 引用链接/卡片：把标题、URL 和用户追问一起发给模型。
+- 兼容 OpenAI 格式的 Chat Completions API。
 
-### 1. 安装依赖
+## 目录结构
 
-```bash
-npm install
+```text
+.
+├── src/                              # WeFlow API CLI TypeScript 源码
+├── resources/                        # WCDB / runtime / key DLL 资源
+├── scripts/weflow-host.mjs           # Windows 宿主进程启动器
+├── test/                             # WeFlow API CLI 测试
+├── 0.wechat-gptbot-wcf-20260423bk/   # 微信机器人项目
+│   ├── channel/weflow.py             # WeFlow 通道
+│   ├── channel/weflow_quote.py       # 引用消息上下文与图片处理
+│   ├── common/
+│   ├── bot/
+│   └── tests/
+├── .env.example                      # WeFlow API CLI 配置模板
+├── package.json
+└── README.md
 ```
 
-### 2. 配置
+## 配置
 
-复制 `.env.example` 为 `.env` 并填写配置：
+不要提交真实配置。仓库已忽略：
+
+- `.env`
+- `config.yaml`
+- `config.json`
+- `**/config.yaml`
+- `**/config.json`
+- `.mindfs/`
+- 运行时生成的图片、日志和缓存文件
+
+### WeFlow API CLI
+
+复制 `.env.example` 为 `.env`：
 
 ```bash
 cp .env.example .env
 ```
 
-配置项说明：
+主要配置：
 
-| 配置项 | 说明 | 示例 |
-|--------|------|------|
-| `DB_PATH` | 微信数据目录路径 | `C:\Users\xxx\Documents\xwechat_files` |
-| `DECRYPT_KEY` | 解密密钥（64位十六进制） | `abc123...` |
-| `MY_WXID` | 微信ID | `wxid_xxxxxx` |
-| `HTTP_PORT` | HTTP API 端口 | `5031` |
-| `HTTP_HOST` | HTTP 监听地址 | `127.0.0.1` |
-| `WS_PORT` | WebSocket 端口 | `5032` |
-| `WS_HOST` | WebSocket 监听地址 | `127.0.0.1` |
+| 配置项 | 说明 |
+| --- | --- |
+| `DB_PATH` | `xwechat_files` 目录 |
+| `DECRYPT_KEY` | 微信数据库解密 key |
+| `MY_WXID` | 当前 bot 登录的微信 ID |
+| `HTTP_HOST` / `HTTP_PORT` | HTTP API 监听地址和端口，默认 `127.0.0.1:5031` |
+| `WS_HOST` / `WS_PORT` | WebSocket 监听地址和端口，默认 `127.0.0.1:5032` |
+| `RESOURCES_PATH` | DLL 资源目录，默认 `./resources` |
 
-### 3. 运行
+### Bot
 
-开发模式：
+在 `0.wechat-gptbot-wcf-20260423bk` 下复制模板：
+
+```bash
+cd 0.wechat-gptbot-wcf-20260423bk
+cp config.template.yaml config.yaml
+```
+
+关键配置：
+
+```yaml
+wechat_channel: weflow
+weflow_http_url: http://127.0.0.1:5031
+weflow_ws_url: ws://127.0.0.1:5032
+openai_api_base: https://your-openai-compatible-endpoint/v1
+openai_api_key: YOUR_API_KEY
+model: gpt-5.5
+wechat_data_dir: C:\Users\YourName\xwechat_files\wxid_xxx_xxxx
+image_xor_key: 31
+image_aes_key: your_image_aes_key
+```
+
+`wechat_data_dir`、`image_xor_key`、`image_aes_key` 用于解密微信图片 `.dat` 文件；引用图片要能被模型识别，所用模型/API 也必须支持 OpenAI 兼容的视觉输入。
+
+## 运行
+
+安装 WeFlow API CLI 依赖：
+
+```bash
+npm install
+```
+
+启动 WeFlow API CLI：
+
 ```bash
 npm run dev
 ```
 
-生产模式：
+生产运行：
+
 ```bash
 npm run build
 npm start
 ```
 
-## API 文档
+Windows 下 `npm run dev` 和 `npm start` 会通过 `scripts/weflow-host.mjs` 自动复制本机 Node 到 `.runtime/weflow.exe`，并用 `weflow.exe` 启动服务。这样可以通过新版 WCDB DLL 的宿主安全校验。
 
-### HTTP API
+启动 bot：
 
-#### 健康检查
-
+```bash
+cd 0.wechat-gptbot-wcf-20260423bk
+pip install -r requirements.txt
+python app.py
 ```
+
+## HTTP API
+
+健康检查：
+
+```http
 GET /health
 GET /api/v1/health
 ```
 
-响应：
-```json
-{ "status": "ok" }
-```
+会话列表：
 
-#### 获取会话列表
-
-```
+```http
 GET /api/v1/sessions?keyword=xxx&limit=100
 ```
 
-参数：
-- `keyword`: 搜索关键词（可选）
-- `limit`: 返回数量限制，默认 100（可选）
+消息列表：
 
-#### 获取消息列表
-
-```
+```http
 GET /api/v1/messages?talker=wxid_xxx&limit=100&offset=0&chatlab=1
 ```
 
-参数：
-- `talker`: 会话ID（必填）
-- `limit`: 返回数量限制，默认 100（可选）
-- `offset`: 偏移量，用于分页，默认 0（可选）
-- `start`: 开始时间，格式 YYYYMMDD（可选）
-- `end`: 结束时间，格式 YYYYMMDD（可选）
-- `chatlab`: 设为 `1` 则输出 ChatLab 格式（可选）
+单条消息，主要用于解析引用消息：
 
-#### 获取联系人列表
-
-```
-GET /api/v1/contacts?keyword=xxx&limit=100
+```http
+GET /api/v1/message?talker=wxid_xxx&serverId=1234567890123456789
 ```
 
-参数：
-- `keyword`: 搜索关键词（可选）
-- `limit`: 返回数量限制，默认 100（可选）
+联系人：
 
-### WebSocket API
+```http
+GET /api/v1/contacts?keyword=xxx&limit=1000
+```
 
-连接地址：`ws://127.0.0.1:5032`
+## WebSocket API
 
-#### 订阅所有会话更新
+连接地址默认：
+
+```text
+ws://127.0.0.1:5032/ws
+```
+
+订阅全部会话：
 
 ```json
 { "type": "subscribe_all" }
 ```
 
-#### 订阅特定会话
+订阅指定会话：
 
 ```json
 { "type": "subscribe", "sessions": ["wxid_xxx", "xxx@chatroom"] }
 ```
 
-#### 取消订阅
+新消息推送示例：
 
-```json
-{ "type": "unsubscribe", "sessions": ["wxid_xxx"] }
-```
-
-#### 心跳检测
-
-```json
-{ "type": "ping" }
-```
-
-响应：
-```json
-{ "type": "pong", "timestamp": 1234567890 }
-```
-
-#### 查询状态
-
-```json
-{ "type": "status" }
-```
-
-#### 服务端推送消息类型
-
-1. **连接成功**
-```json
-{
-  "type": "connected",
-  "clientId": "client_1",
-  "message": "Welcome to WeFlow WebSocket API",
-  "timestamp": 1234567890
-}
-```
-
-2. **订阅确认**
-```json
-{
-  "type": "subscribed",
-  "sessions": ["wxid_xxx", "xxx@chatroom"],
-  "timestamp": 1234567890
-}
-```
-
-3. **取消订阅确认**
-```json
-{
-  "type": "unsubscribed",
-  "sessions": [],
-  "timestamp": 1234567890
-}
-```
-
-4. **新消息通知** (与 ChatLab 格式一致)
 ```json
 {
   "type": "new_message",
-  "sessionId": "xxxx@chatroom",
+  "sessionId": "fantasysk",
   "message": {
-    "sender": "wxid_xxx",
-    "timestamp": 1771600187,
+    "sender": "fantasysk",
+    "senderName": "Kayson",
+    "senderDisplayName": "Kayson",
+    "timestamp": 1779933453,
     "type": 25,
-    "content": "[引用] 消息内容",
-    "referencedPlatformMessageId": "1234567890123456780",
-    "platformMessageId": "1234567890123456789"
+    "content": "[引用] 热量有多少",
+    "referencedPlatformMessageId": "8123737055266740776",
+    "platformMessageId": "6414109638618392825"
   },
-  "timestamp": 1234567890
+  "timestamp": 1779904614677
 }
 ```
 
-消息字段说明：
-- `sender`: 发送者微信ID
-- `timestamp`: 消息时间戳（秒）
-- `type`: 消息类型（ChatLab 标准类型）
-  - `0`: 文本
-  - `1`: 图片
-  - `2`: 语音
-  - `3`: 视频
-  - `4`: 文件
-  - `5`: 表情
-  - `7`: 链接
-  - `8`: 位置
-  - `20`: 红包
-  - `21`: 转账
-  - `22`: 拍一拍
-  - `23`: 通话
-  - `24`: 分享
-  - `25`: 引用
-  - `26`: 聊天记录
-  - `27`: 名片
-  - `80`: 系统消息
-  - `81`: 撤回消息
-  - `99`: 其他
-- `content`: 消息内容（已解析的纯文本）
-- `referencedPlatformMessageId`: 引用消息对应的原消息ID（仅 `type=25` 时存在）
-- `platformMessageId`: 平台消息ID
+常用消息类型：
 
-`content` 输出示例（部分类型）：`type=22` 为 `“A” 拍了拍 “B”`，`type=80` 为 `“昵称” 撤回了一条消息`，`type=25` 为 `[引用] 原消息内容`。
+| type | 含义 |
+| --- | --- |
+| `0` | 文本 |
+| `1` | 图片 |
+| `7` | 链接 |
+| `25` | 引用 |
+| `80` | 系统消息 |
+| `99` | 其他 |
 
-## 目录结构
+## 引用消息处理
 
+Bot 收到 `type=25` 或带 `referencedPlatformMessageId` 的消息后，会：
+
+1. 用 `/api/v1/message` 按 `serverId` 精确查询被引用消息。
+2. 如果当前 WeFlow API 没有单条查询接口，则退回到 `/api/v1/messages` 最近消息里匹配。
+3. 文本和链接引用会合并到 prompt。
+4. 图片引用会优先命中最近已解密图片缓存；缓存未命中时再按消息时间戳和本地时区校正扫描 `.dat`。
+5. 图片成功定位后，以 OpenAI `image_url` data URL 格式传给上游模型。
+
+命中图片缓存时，bot 日志会出现：
+
+```text
+[WeFlowChannel] Using cached quoted image: ...
 ```
-weflow-api-cli/
-├── src/
-│   ├── index.ts        # 主入口
-│   ├── config.ts       # 配置服务
-│   ├── wcdbCore.ts     # WCDB 数据库服务
-│   ├── httpService.ts  # HTTP API 服务
-│   └── wsService.ts    # WebSocket 服务
-├── resources/          # DLL 文件目录
-│   ├── wcdb_api.dll
-│   ├── WCDB.dll
-│   ├── SDL2.dll
-│   └── ...
-├── .env                # 配置文件
-├── .env.example        # 配置示例
-├── package.json
-├── tsconfig.json
-└── README.md
+
+## 测试
+
+WeFlow API CLI：
+
+```bash
+npm test
+npm run build
+```
+
+Bot：
+
+```bash
+cd 0.wechat-gptbot-wcf-20260423bk
+python3 -m unittest discover -s tests
+python3 -m compileall channel/weflow.py channel/weflow_quote.py common/context.py common/session.py
 ```
 
 ## 注意事项
 
-1. 仅支持 Windows 系统
-2. 需要 Node.js 18.0.0 或更高版本
-3. 需要微信 4.0 及以上版本的数据库
-4. API 默认仅监听本地地址 `127.0.0.1`，不对外网开放
-
-## 使用示例
-
-### Python
-
-```python
-import requests
-
-BASE_URL = "http://127.0.0.1:5031"
-
-# 获取会话列表
-sessions = requests.get(f"{BASE_URL}/api/v1/sessions").json()
-print(sessions)
-
-# 获取消息
-messages = requests.get(f"{BASE_URL}/api/v1/messages", params={
-    "talker": "wxid_xxx",
-    "limit": 100,
-    "chatlab": 1
-}).json()
-print(messages)
-```
-
-### JavaScript
-
-```javascript
-// HTTP API
-const sessions = await fetch('http://127.0.0.1:5031/api/v1/sessions').then(r => r.json());
-console.log(sessions);
-
-// WebSocket
-const ws = new WebSocket('ws://127.0.0.1:5032');
-ws.onopen = () => {
-  ws.send(JSON.stringify({ type: 'subscribe_all' }));
-};
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log('收到消息:', data);
-};
-```
+- 仅在 Windows 微信 4.x 数据库环境下完整验证。
+- 本仓库包含 Windows x64 WCDB 运行资源；不要随意混用不同版本的 `resources` 和 DLL。
+- 如果 bot 回复“看不到图片”，先看日志是否出现 `Using cached quoted image`。没有出现通常是图片未成功解密或缓存 ID 未命中。
+- OpenAI 兼容接口必须支持多模态 `image_url`，否则引用图片只能作为文本占位处理。
 
 ## 致谢
 
-- [WeFlow](https://github.com/hicccc77/WeFlow) - 原项目
-
-## 许可证
-
-本项目遵循原 WeFlow 项目的许可证。
+- [WeFlow](https://github.com/hicccc77/WeFlow)
+- 原 `wechat-gptbot-wcf` 项目
