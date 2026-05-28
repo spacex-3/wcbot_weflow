@@ -64,6 +64,65 @@ class WeFlowWebpageTest(unittest.TestCase):
         self.assertEqual(result["title"], "普通网页标题")
         self.assertEqual(result["content"], "abcdefgh...")
 
+    def test_fetch_regular_page_keeps_media_placeholders_in_reading_order(self):
+        html = """
+        <html>
+          <body>
+            <article>
+              <p>第一段。</p>
+              <figure>
+                <img alt="善款明细截图" src="a.jpg">
+                <figcaption>截图说明。</figcaption>
+              </figure>
+              <p>第二段。</p>
+              <video src="clip.mp4"></video>
+              <p>第三段。</p>
+            </article>
+          </body>
+        </html>
+        """
+
+        result = fetch_webpage_text(
+            "https://example.com/post",
+            request_get=lambda *args, **kwargs: FakeResponse(html, url="https://example.com/post"),
+        )
+
+        self.assertIsNone(result["error"])
+        self.assertEqual(
+            result["content"],
+            "第一段。\n[图片暂不读取：善款明细截图]\n截图说明。\n第二段。\n[视频暂不读取]\n第三段。",
+        )
+
+    def test_fetch_collapses_consecutive_images_and_filters_common_ui_noise(self):
+        html = """
+        <html>
+          <body>
+            <article>
+              <p>明细如下。</p>
+              <p>滑动查看</p>
+              <img src="one.jpg">
+              <img src="two.jpg">
+              <picture><source srcset="three.webp"><img src="three.jpg"></picture>
+              <p>滑动查看</p>
+              <p>赞</p>
+              <p>在看</p>
+              <p>剩余善款为64589.42元。</p>
+            </article>
+          </body>
+        </html>
+        """
+
+        result = fetch_webpage_text(
+            "https://example.com/post",
+            request_get=lambda *args, **kwargs: FakeResponse(html, url="https://example.com/post"),
+        )
+
+        self.assertIsNone(result["error"])
+        self.assertEqual(
+            result["content"],
+            "明细如下。\n[连续图片暂不读取 x3]\n剩余善款为64589.42元。",
+        )
+
     def test_fetch_rejects_non_http_url_without_request(self):
         called = []
 
