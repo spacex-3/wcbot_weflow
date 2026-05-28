@@ -39,4 +39,6 @@ image_xor_key: 0x1F
 image_aes_key: ''
 quoted_link_fetch_timeout: 10
 quoted_link_fetch_max_chars: 12000
+quoted_chat_record_link_fetch_limit: 3
+quoted_chat_record_link_fetch_max_chars: 4000
 assets_retention_days: 7

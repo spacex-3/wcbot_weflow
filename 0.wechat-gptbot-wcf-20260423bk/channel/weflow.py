@@ -27,9 +27,11 @@ from channel.weflow_quote import (
     build_quote_context,
     cache_image_path,
     candidate_image_timestamps,
+    extract_chat_record_link_urls,
     extract_link_url,
     extract_referenced_message_id,
     get_cached_image_path,
+    is_referenced_chat_record_message,
     is_referenced_link_message,
     is_weflow_reply_message,
     strip_weflow_reply_marker,
@@ -189,8 +191,8 @@ class WeFlowChannel(Channel):
             self.contacts.get(sdid, {}).get('name', sdid) if not rmid else self.get_group_member_name(rmid, sdid)
         )
 
-        bot_wxid = conf().get("wechat_bot_wxid", "wxid_ocksk3cjcq5j22")
-        bot_name = conf().get("wechat_bot_name", "pika")
+        bot_wxid = conf().get("wechat_bot_wxid", "")
+        bot_name = conf().get("wechat_bot_name", "")
 
         is_self_msg = (sdid == bot_wxid or sdid == self.personal_info.get('wx_id') or sender_name == bot_name)
 
@@ -347,7 +349,22 @@ class WeFlowChannel(Channel):
                 logger.warning(f"[WeFlowChannel] Quoted image could not be decrypted: {referenced_message_id}")
 
         webpage = None
-        if is_referenced_link_message(referenced_message):
+        chat_record_webpages = {}
+        if is_referenced_chat_record_message(referenced_message):
+            link_urls = extract_chat_record_link_urls(referenced_message)
+            link_limit = max(0, self.get_int_config("quoted_chat_record_link_fetch_limit", 3))
+            for link_url in link_urls[:link_limit]:
+                logger.info(f"[WeFlowChannel] Fetching quoted chat record link content: {link_url}")
+                chat_record_webpages[link_url] = fetch_webpage_text(
+                    link_url,
+                    timeout=self.get_int_config("quoted_link_fetch_timeout", 10),
+                    max_chars=self.get_int_config("quoted_chat_record_link_fetch_max_chars", 4000),
+                )
+                if chat_record_webpages[link_url].get("error"):
+                    logger.warning(
+                        f"[WeFlowChannel] Quoted chat record link fetch failed: {chat_record_webpages[link_url].get('error')}"
+                    )
+        elif is_referenced_link_message(referenced_message):
             link_url = extract_link_url(referenced_message)
             if link_url:
                 logger.info(f"[WeFlowChannel] Fetching quoted link content: {link_url}")
@@ -364,6 +381,7 @@ class WeFlowChannel(Channel):
             referenced_message,
             image_path=image_path,
             webpage=webpage,
+            chat_record_webpages=chat_record_webpages,
         )
         context.query = prompt
         if message_content is not None:
@@ -575,8 +593,8 @@ class WeFlowChannel(Channel):
         logger.exception(f"[WeFlow Websocket] Error: {error}", exc_info=error)
 
     def get_personal_info(self):
-        bot_wxid = conf().get("wechat_bot_wxid", "wxid_ocksk3cjcq5j22")
-        bot_name = conf().get("wechat_bot_name", "pika")
+        bot_wxid = conf().get("wechat_bot_wxid", "")
+        bot_name = conf().get("wechat_bot_name", "bot")
         try:
             res = requests.get(f"{self._http_url}/api/v1/self")
             if res.status_code == 200:

@@ -15,10 +15,14 @@ from channel.weflow_quote import (
     build_quote_context,
     cache_image_path,
     candidate_image_timestamps,
+    extract_chat_record_link_urls,
     extract_link_url,
     extract_referenced_message_id,
     get_cached_image_path,
+    is_referenced_chat_record_message,
+    is_referenced_link_message,
     is_weflow_reply_message,
+    parse_chat_record_items,
     strip_weflow_reply_marker,
 )
 from common.context import Context
@@ -125,6 +129,58 @@ class WeFlowQuoteContextTest(unittest.TestCase):
             ),
             "https://mp.weixin.qq.com/s/raw",
         )
+
+    def test_chat_record_quote_parses_text_media_and_link_items(self):
+        raw_content = (
+            "<msg><appmsg><type>19</type><title>小橙的聊天记录</title>"
+            "<recorditem><![CDATA[<recordinfo><datalist count=\"4\">"
+            "<dataitem datatype=\"1\"><sourcename>Alice</sourcename><datadesc>第一句</datadesc></dataitem>"
+            "<dataitem datatype=\"3\"><sourcename>Bob</sourcename></dataitem>"
+            "<dataitem datatype=\"43\"><sourcename>Alice</sourcename></dataitem>"
+            "<dataitem datatype=\"5\"><sourcename>Bob</sourcename><datatitle>文章标题</datatitle><datadesc>文章摘要</datadesc><dataurl>https://example.com/a</dataurl></dataitem>"
+            "</datalist></recordinfo>]]></recorditem></appmsg></msg>"
+        )
+        referenced_message = {
+            "serverId": "104",
+            "senderUsername": "fantasysk",
+            "parsedContent": "[聊天记录] 小橙的聊天记录",
+            "rawContent": raw_content,
+            "localType": 49,
+            "xmlType": "19",
+        }
+
+        self.assertTrue(is_referenced_chat_record_message(referenced_message))
+        self.assertFalse(is_referenced_link_message(referenced_message))
+        self.assertEqual(
+            extract_chat_record_link_urls(referenced_message),
+            ["https://example.com/a"],
+        )
+        items = parse_chat_record_items(referenced_message)
+        self.assertEqual(len(items), 4)
+        prompt, content = build_quote_context(
+            "总结一下",
+            referenced_message,
+            chat_record_webpages={
+                "https://example.com/a": {
+                    "url": "https://example.com/a",
+                    "title": "网页标题",
+                    "site_name": "示例站",
+                    "content": "下载后的链接正文",
+                    "error": None,
+                }
+            },
+        )
+
+        self.assertIsNone(content)
+        self.assertIn("被引用消息（聊天记录", prompt)
+        self.assertIn("标题：小橙的聊天记录", prompt)
+        self.assertIn("1. Alice：第一句", prompt)
+        self.assertIn("2. Bob：[图片暂不读取]", prompt)
+        self.assertIn("3. Alice：[视频暂不读取]", prompt)
+        self.assertIn("4. Bob：[链接] 文章标题", prompt)
+        self.assertIn("URL：https://example.com/a", prompt)
+        self.assertIn("网页正文：\n   下载后的链接正文", prompt)
+        self.assertIn("用户追问：\n总结一下", prompt)
 
     def test_image_quote_builds_openai_multimodal_content(self):
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:

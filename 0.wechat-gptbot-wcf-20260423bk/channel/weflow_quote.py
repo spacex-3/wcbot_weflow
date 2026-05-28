@@ -131,6 +131,7 @@ def build_quote_context(
     referenced_message: dict[str, Any] | None,
     image_path: str | None = None,
     webpage: dict[str, Any] | None = None,
+    chat_record_webpages: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, Any | None]:
     message = referenced_message or {}
     kind = _infer_referenced_kind(message)
@@ -146,6 +147,26 @@ def build_quote_context(
         )
         image_content = _build_image_content(prompt, image_path)
         return prompt, image_content
+
+    if kind == "chat_record":
+        title = _extract_link_title(message)
+        record_text = _format_chat_record(
+            parse_chat_record_items(message),
+            chat_record_webpages or {},
+        )
+        parts = []
+        if title:
+            parts.append(f"标题：{title}")
+        parts.append("聊天记录内容：")
+        parts.append(record_text or "[未解析出聊天记录明细]")
+
+        prompt = (
+            f"你正在回复一条微信引用消息。请同时参考被引用聊天记录和用户追问，优先回答用户追问。\n\n"
+            f"被引用消息（聊天记录{sender_hint}）：\n"
+            f"{chr(10).join(parts)}\n\n"
+            f"用户追问：\n{(user_query or '').strip()}"
+        )
+        return prompt, None
 
     if kind == "link":
         title = _extract_link_title(message)
@@ -200,6 +221,8 @@ def _infer_referenced_kind(message: dict[str, Any]) -> str:
 
     if local_type == 3 or parsed_content in ("[图片]", "[image]", "图片"):
         return "image"
+    if is_referenced_chat_record_message(message):
+        return "chat_record"
     if extract_link_url(message):
         return "link"
     if local_type == 49 and xml_type in ("5", "49", ""):
@@ -211,11 +234,165 @@ def is_referenced_link_message(message: dict[str, Any]) -> bool:
     return _infer_referenced_kind(message) == "link"
 
 
+def is_referenced_chat_record_message(message: dict[str, Any]) -> bool:
+    xml_type = str(message.get("xmlType") or "").strip()
+    parsed_content = _clean_text(message.get("parsedContent"))
+    raw_content = _normalize_xml_text(str(message.get("rawContent") or message.get("content") or ""))
+    return (
+        xml_type == "19"
+        or parsed_content.startswith("[聊天记录]")
+        or "<recorditem" in raw_content
+    )
+
+
 def extract_link_url(message: dict[str, Any]) -> str:
     return _pick_first(message, "url", "linkUrl") or _extract_xml_value(
         str(message.get("rawContent") or message.get("content") or ""),
         "url",
     )
+
+
+def parse_chat_record_items(message: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_content = str(message.get("rawContent") or message.get("content") or "")
+    record_xml = _extract_recorditem_xml(raw_content)
+    if not record_xml:
+        return []
+
+    items = []
+    for match in re.finditer(r"<dataitem\b([^>]*)>([\s\S]*?)</dataitem>", record_xml, re.IGNORECASE):
+        attrs = match.group(1) or ""
+        body = match.group(2) or ""
+        datatype = _to_int(_extract_attr_value(attrs, "datatype") or _extract_xml_value(body, "datatype"))
+        url = _clean_record_field(
+            _extract_xml_value(body, "dataurl")
+            or _extract_xml_value(body, "url")
+            or _extract_xml_value(body, "link")
+        )
+        items.append(
+            {
+                "datatype": datatype,
+                "sourcename": _clean_record_field(_extract_xml_value(body, "sourcename")),
+                "sourcetime": _clean_record_field(_extract_xml_value(body, "sourcetime")),
+                "datadesc": _clean_record_field(_extract_xml_value(body, "datadesc")),
+                "datatitle": _clean_record_field(_extract_xml_value(body, "datatitle")),
+                "dataurl": url,
+                "fileext": _clean_record_field(_extract_xml_value(body, "fileext")),
+                "datasize": _to_int(_extract_xml_value(body, "datasize")),
+            }
+        )
+    return items
+
+
+def extract_chat_record_link_urls(message: dict[str, Any]) -> list[str]:
+    urls = []
+    for item in parse_chat_record_items(message):
+        if not _is_chat_record_link_item(item):
+            continue
+        url = str(item.get("dataurl") or "").strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _format_chat_record(items: list[dict[str, Any]], webpages: dict[str, dict[str, Any]]) -> str:
+    if not items:
+        return ""
+
+    lines = []
+    for index, item in enumerate(items, 1):
+        sender = str(item.get("sourcename") or "未知").strip()
+        lines.append(f"{index}. {sender}：{_format_chat_record_item(item, webpages)}")
+    return "\n".join(lines)
+
+
+def _format_chat_record_item(item: dict[str, Any], webpages: dict[str, dict[str, Any]]) -> str:
+    datatype = _to_int(item.get("datatype"))
+    title = str(item.get("datatitle") or "").strip()
+    desc = str(item.get("datadesc") or "").strip()
+    url = str(item.get("dataurl") or "").strip()
+
+    if _is_chat_record_image_item(datatype):
+        return "[图片暂不读取]"
+    if _is_chat_record_video_item(datatype):
+        return "[视频暂不读取]"
+    if _is_chat_record_voice_item(datatype):
+        return "[语音暂不读取]"
+    if _is_chat_record_link_item(item):
+        parts = [f"[链接] {title or desc or url or '链接'}"]
+        if url:
+            parts.append(f"URL：{url}")
+        if desc and desc != title:
+            parts.append(f"摘要：{desc}")
+        webpage = webpages.get(url) if url else None
+        if webpage:
+            page_title = _clean_text(webpage.get("title"))
+            page_site_name = _clean_text(webpage.get("site_name"))
+            page_content = _clean_text(webpage.get("content"))
+            page_error = _clean_text(webpage.get("error"))
+            if page_title and page_title != title:
+                parts.append(f"网页标题：{page_title}")
+            if page_site_name:
+                parts.append(f"来源：{page_site_name}")
+            if page_content:
+                parts.append(f"网页正文：\n   {page_content}")
+            elif page_error:
+                parts.append(f"网页正文：下载失败（{page_error}）")
+        return "\n   ".join(parts)
+    if _is_chat_record_file_item(item):
+        return f"[文件暂不读取] {title or desc}".strip()
+    if datatype == 47:
+        return "[表情暂不读取]"
+    return desc or title or "[消息]"
+
+
+def _is_chat_record_link_item(item: dict[str, Any]) -> bool:
+    datatype = _to_int(item.get("datatype"))
+    return datatype in (5, 7) or (datatype == 49 and bool(item.get("dataurl")))
+
+
+def _is_chat_record_file_item(item: dict[str, Any]) -> bool:
+    datatype = _to_int(item.get("datatype"))
+    return datatype in (6, 8) or (datatype == 49 and not item.get("dataurl"))
+
+
+def _is_chat_record_image_item(datatype: int) -> bool:
+    return datatype in (2, 3)
+
+
+def _is_chat_record_video_item(datatype: int) -> bool:
+    return datatype in (4, 15, 43)
+
+
+def _is_chat_record_voice_item(datatype: int) -> bool:
+    return datatype == 34
+
+
+def _extract_recorditem_xml(raw_content: str) -> str:
+    normalized = _normalize_xml_text(raw_content)
+    match = re.search(r"<recorditem\b[^>]*>([\s\S]*?)</recorditem>", normalized, re.IGNORECASE)
+    if not match:
+        return ""
+    body = match.group(1).strip()
+    cdata = re.search(r"<!\[CDATA\[([\s\S]*?)\]\]>", body)
+    if cdata:
+        body = cdata.group(1)
+    return _normalize_xml_text(body).strip()
+
+
+def _extract_attr_value(attrs: str, name: str) -> str:
+    match = re.search(fr'{name}\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _clean_record_field(value: str) -> str:
+    return _clean_text(value).replace("\r\n", "\n").strip()
+
+
+def _normalize_xml_text(value: str) -> str:
+    text = str(value or "")
+    if "&lt;" in text or "&gt;" in text or "&amp;" in text:
+        text = html.unescape(text)
+    return text
 
 
 def _build_image_content(prompt: str, image_path: str | None) -> list[dict[str, Any]] | None:
